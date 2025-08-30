@@ -12,7 +12,7 @@
         
         <div class="text-center mb-8">
             <h1 class="text-3xl font-bold text-gray-900">Premier League Predictor</h1>
-            <p class="text-gray-600 mt-2">Select teams and enter odds to simulate a match.</p>
+            <p id="accuracyDisplay" class="text-gray-500 mt-2">Connecting to model...</p>
         </div>
 
         <div class="space-y-6">
@@ -28,26 +28,10 @@
                 </div>
             </div>
 
-            <!-- Odds Input with clear labels -->
-            <div>
-                <div class="grid grid-cols-3 gap-4">
-                    <div>
-                        <label for="homeOdds" class="block text-sm font-medium text-gray-700 mb-2 text-center">Home Win</label>
-                        <input type="number" step="0.01" id="homeOdds" value="1.64" class="w-full bg-white border-gray-300 text-gray-900 rounded-lg px-4 py-3 text-center focus:ring-blue-500 focus:border-blue-500 transition border">
-                    </div>
-                    <div>
-                        <label for="drawOdds" class="block text-sm font-medium text-gray-700 mb-2 text-center">Draw</label>
-                        <input type="number" step="0.01" id="drawOdds" value="4.40" class="w-full bg-white border-gray-300 text-gray-900 rounded-lg px-4 py-3 text-center focus:ring-blue-500 focus:border-blue-500 transition border">
-                    </div>
-                    <div>
-                        <label for="awayOdds" class="block text-sm font-medium text-gray-700 mb-2 text-center">Away Win</label>
-                        <input type="number" step="0.01" id="awayOdds" value="5.50" class="w-full bg-white border-gray-300 text-gray-900 rounded-lg px-4 py-3 text-center focus:ring-blue-500 focus:border-blue-500 transition border">
-                    </div>
-                </div>
-            </div>
+            <!-- Odds Input has been removed as they are now fetched automatically -->
 
             <!-- Predict Button -->
-            <button id="predictBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300 text-lg">
+            <button id="predictBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300 text-lg mt-6">
                 Predict Match
             </button>
         </div>
@@ -56,7 +40,7 @@
         <div id="results" class="mt-8 hidden">
             <h2 id="resultsTitle" class="text-xl font-semibold text-center mb-4">Prediction Results</h2>
             <div id="loading" class="text-center">
-                <p class="text-gray-500">Connecting to model and running simulation...</p>
+                <p class="text-gray-500">Fetching live odds and running simulation...</p>
             </div>
             <div id="predictionContent" class="hidden space-y-4">
                 <!-- Probabilities -->
@@ -71,85 +55,94 @@
                     <p id="finalPrediction" class="text-2xl font-bold text-blue-600"></p>
                 </div>
             </div>
+             <!-- Error Message -->
+            <div id="errorContent" class="hidden text-center text-red-600 mt-4">
+                <p id="errorMessage"></p>
+            </div>
         </div>
 
     </div>
 
     <script>
-        // My list of teams for the dropdowns.
-        const teams = [
-            "Arsenal", "Aston Villa", "Bournemouth", "Brentford", "Brighton", 
-            "Burnley", "Chelsea", "Crystal Palace", "Everton", "Fulham", 
-            "Liverpool", "Luton", "Man City", "Man United", "Newcastle", 
-            "Nott'm Forest", "Sheffield United", "Tottenham", "West Ham", "Wolves"
-        ];
-
+        // UI Elements
         const homeTeamSelect = document.getElementById('homeTeam');
         const awayTeamSelect = document.getElementById('awayTeam');
-
-        teams.forEach(team => {
-            homeTeamSelect.add(new Option(team, team));
-            awayTeamSelect.add(new Option(team, team));
-        });
-
-        homeTeamSelect.value = "Chelsea";
-        awayTeamSelect.value = "Fulham";
-        
-        // --- UI Elements ---
         const predictBtn = document.getElementById('predictBtn');
         const resultsDiv = document.getElementById('results');
         const loadingDiv = document.getElementById('loading');
         const predictionContentDiv = document.getElementById('predictionContent');
+        const errorContentDiv = document.getElementById('errorContent');
+        const errorMessage = document.getElementById('errorMessage');
         const resultsTitle = document.getElementById('resultsTitle');
         const homeProbText = document.getElementById('homeProbText');
         const drawProbText = document.getElementById('drawProbText');
         const awayProbText = document.getElementById('awayProbText');
         const finalPrediction = document.getElementById('finalPrediction');
 
-        // This is the new part: my button now talks to my Python server.
+        document.addEventListener('DOMContentLoaded', () => {
+            const accuracyDisplay = document.getElementById('accuracyDisplay');
+            
+            fetch('http://127.0.0.1:5000/teams')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.teams) {
+                        data.teams.forEach(team => {
+                            homeTeamSelect.add(new Option(team, team));
+                            awayTeamSelect.add(new Option(team, team));
+                        });
+                        homeTeamSelect.value = "Chelsea";
+                        awayTeamSelect.value = "Fulham";
+                    }
+                })
+                .catch(error => console.error('Error fetching teams:', error));
+
+            fetch('http://127.0.0.1:5000/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.model_accuracy) {
+                        accuracyDisplay.textContent = `Current Model Accuracy: ${(data.model_accuracy * 100).toFixed(2)}%`;
+                    } else {
+                        accuracyDisplay.textContent = 'Could not retrieve model accuracy.';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching accuracy:', error);
+                    accuracyDisplay.textContent = 'Model server is offline.';
+                });
+        });
+
         predictBtn.addEventListener('click', () => {
             const homeTeam = homeTeamSelect.value;
             const awayTeam = awayTeamSelect.value;
-            const homeOdds = document.getElementById('homeOdds').value;
-            const drawOdds = document.getElementById('drawOdds').value;
-            const awayOdds = document.getElementById('awayOdds').value;
 
             if (homeTeam === awayTeam) {
                 alert("Please select two different teams.");
-                return;
-            }
-            if (!homeOdds || !drawOdds || !awayOdds) {
-                alert("Please enter a value for all three odds.");
                 return;
             }
 
             resultsDiv.classList.remove('hidden');
             loadingDiv.classList.remove('hidden');
             predictionContentDiv.classList.add('hidden');
+            errorContentDiv.classList.add('hidden');
             
-            // This is the data I'll send to my Flask server.
             const predictionData = {
                 home_team: homeTeam,
                 away_team: awayTeam,
-                home_odds: homeOdds,
-                draw_odds: drawOdds,
-                away_odds: awayOdds
             };
 
-            // I'm using 'fetch' to call my Python API.
             fetch('http://127.0.0.1:5000/predict', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(predictionData),
             })
             .then(response => {
-                if (!response.ok) { throw new Error('Network response was not ok'); }
+                // If the response is not ok, we need to handle the error message from the server.
+                if (!response.ok) {
+                    return response.json().then(err => { throw new Error(err.error) });
+                }
                 return response.json();
             })
             .then(data => {
-                // Now I'm using the REAL data from my model!
                 const { home_win, draw, away_win } = data.probabilities;
                 updateResultsUI(data.home_team_corrected, data.away_team_corrected, home_win, draw, away_win);
                 loadingDiv.classList.add('hidden');
@@ -157,19 +150,19 @@
             })
             .catch((error) => {
                 console.error('Error:', error);
-                resultsTitle.textContent = "Error: Could not connect to the model. Is the python app.py server running?";
+                resultsTitle.textContent = "Prediction Error";
+                errorMessage.textContent = error.message || "Could not connect to the model.";
                 loadingDiv.classList.add('hidden');
+                errorContentDiv.classList.remove('hidden');
             });
         });
 
         function updateResultsUI(home, away, homeProb, drawProb, awayProb) {
             resultsTitle.textContent = "Prediction Results";
-
             homeProbText.textContent = `${home} Win: ${(homeProb * 100).toFixed(2)}%`;
             drawProbText.textContent = `Draw: ${(drawProb * 100).toFixed(2)}%`;
             awayProbText.textContent = `${away} Win: ${(awayProb * 100).toFixed(2)}%`;
 
-            // Determine the final prediction from the probabilities
             let predictionText = "";
             if (homeProb > drawProb && homeProb > awayProb) {
                 predictionText = `${home} (Home Win)`;

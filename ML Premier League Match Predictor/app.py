@@ -1,56 +1,135 @@
-# My Premier League Match Predictor Project - The Backend Server
+# Premier League Predictor - Backend Server
 
 import pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 from thefuzz import process
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import requests # New library for making API calls
 
-# First, I need to create my web server application.
+# Initialize the Flask web server.
 app = Flask(__name__)
-# This line allows my HTML page to talk to this Python server.
+# Enable Cross-Origin Resource Sharing (CORS) to allow the UI to communicate with the server.
 CORS(app)
 
-# --- Global variables ---
-# I'll store the trained model and other important things here.
-# This way, the model only has to train once when I start the server.
+# Global variables to store the model and data once loaded.
 best_model = None
 label_encoder = None
 features_columns = None
 team_stats = {}
 teams = []
-data = None # This will hold my full dataset for H2H lookups
+data = None
+model_accuracy = 0.0 # Stores the calculated accuracy of the model.
 
-# --- My Helper Functions ---
+# --- Function to get live odds from The Odds API ---
+def get_live_odds(home_team, away_team):
+    """Fetches live betting odds from The Odds API."""
+    # --- I have inserted your API key here ---
+    API_KEY = "29981667af634cde0f98c8f45ece5306" 
+    # --------------------------------------------------------------------
+
+    if API_KEY == "YOUR_API_KEY_HERE":
+        print("WARNING: Live odds fetching is disabled. Please add your API key from the-odds-api.com")
+        return None
+
+    SPORT = 'soccer_epl'
+    REGIONS = 'uk'
+    MARKETS = 'h2h'
+    
+    url = f'https://api.the-odds-api.com/v4/sports/{SPORT}/odds/?apiKey={API_KEY}&regions={REGIONS}&markets={MARKETS}'
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        odds_json = response.json()
+        
+        best_match = None
+        highest_score = 0
+        
+        for game in odds_json:
+            home_score = process.extractOne(home_team, [game['home_team']])[1]
+            away_score = process.extractOne(away_team, [game['away_team']])[1]
+            total_score = (home_score + away_score) / 2
+            
+            if total_score > highest_score:
+                highest_score = total_score
+                best_match = game
+
+        if best_match and highest_score > 80:
+            print(f"Found best match in odds feed: {best_match['home_team']} vs {best_match['away_team']} (Score: {highest_score})")
+            if len(best_match['bookmakers']) > 0:
+                prices = best_match['bookmakers'][0]['markets'][0]['outcomes']
+                odds = {}
+                for outcome in prices:
+                    if outcome['name'] == best_match['home_team']:
+                        odds['home'] = outcome['price']
+                    elif outcome['name'] == best_match['away_team']:
+                        odds['away'] = outcome['price']
+                    else:
+                        odds['draw'] = outcome['price']
+
+                if 'home' in odds and 'away' in odds and 'draw' in odds:
+                    print(f"Live odds found: H={odds['home']}, D={odds['draw']}, A={odds['away']}")
+                    return odds
+        
+        print(f"Match for {home_team} vs {away_team} not found in the live odds feed.")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching live odds: {e}")
+        return None
+
 def get_points(result, is_home):
+    """Calculates points awarded for a given match result."""
     if result == 'H': return 3 if is_home else 0
     if result == 'A': return 0 if is_home else 3
     if result == 'D': return 1
     return 0
 
 def find_best_match(name, choices):
+    """Finds the closest team name match to handle potential user typos."""
     best_match = process.extractOne(name, choices)
     return best_match[0] if best_match else None
 
-# This is the main function that does all the heavy lifting.
 def load_and_prepare_data_and_model():
-    # I need to use 'global' so I can modify the variables I created outside.
-    global best_model, label_encoder, features_columns, team_stats, teams, data
+    """Loads all data from live URLs, engineers features, and trains the final model."""
+    global best_model, label_encoder, features_columns, team_stats, teams, data, model_accuracy
 
-    print("--- Server is starting: Loading data and training model... ---")
+    print("--- Server is starting: Fetching LIVE data and training model... ---")
     
-    # My list of data files.
-    filenames = [
-        'E0_2223.csv',
-        'E0_2324.csv',
-        'E0_2425.csv',
-        'E0_2526.csv'
+    urls = [
+        'https://www.football-data.co.uk/mmz4281/2223/E0.csv',
+        'https://www.football-data.co.uk/mmz4281/2324/E0.csv',
+        'https://www.football-data.co.uk/mmz4281/2425/E0.csv',
+        'https://www.football-data.co.uk/mmz4281/2526/E0.csv'
     ]
-    all_seasons_data = [pd.read_csv(f, parse_dates=['Date'], dayfirst=True) for f in filenames]
+    
+    all_seasons_data = []
+    for url in urls:
+        try:
+            df = pd.read_csv(url)
+            df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
+            all_seasons_data.append(df)
+            print(f"Successfully fetched data from {url}")
+        except Exception as e:
+            print(f"Error fetching data from {url}. Error: {e}")
+    
     master_df = pd.concat(all_seasons_data, ignore_index=True)
+    
+    allowed_teams = [
+        "Arsenal", "Tottenham", "Liverpool", "Chelsea", "Nott'm Forest",
+        "Man City", "Sunderland", "Everton", "Bournemouth", "Brentford",
+        "Burnley", "Leeds United", "Fulham", "Crystal Palace", "Newcastle",
+        "Man United", "Aston Villa", "Brighton", "Wolves", "West Ham"
+    ]
+    master_df = master_df[
+        master_df['HomeTeam'].isin(allowed_teams) &
+        master_df['AwayTeam'].isin(allowed_teams)
+    ].copy()
+    print(f"--- Data filtered for {len(allowed_teams)} specific teams. ---")
+
     master_df.sort_values(by='Date', inplace=True)
 
     data = master_df[['Date', 'HomeTeam', 'AwayTeam', 'FTHG', 'FTAG', 'FTR', 'B365H', 'B365D', 'B365A']]
@@ -58,7 +137,6 @@ def load_and_prepare_data_and_model():
 
     teams = data['HomeTeam'].unique()
 
-    # The same feature engineering logic to calculate form and H2H.
     for team in teams:
         home_games = data[data['HomeTeam'] == team]
         away_games = data[data['AwayTeam'] == team]
@@ -94,32 +172,65 @@ def load_and_prepare_data_and_model():
     features = data.drop(columns=['HomeTeam', 'AwayTeam', 'FTHG', 'FTAG', 'FTR'])
     features_columns = features.columns
 
-    # Using the best parameters we found earlier.
+    X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
+    
     best_params = {'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 100}
+    test_model = xgb.XGBClassifier(objective='multi:softmax', num_class=3, seed=42, **best_params)
+    test_model.fit(X_train, y_train)
+    predictions = test_model.predict(X_test)
+    model_accuracy = accuracy_score(y_test, predictions)
+    print(f"--- Model Accuracy calculated: {model_accuracy:.2%} ---")
+    
     best_model = xgb.XGBClassifier(objective='multi:softmax', num_class=3, seed=42, **best_params)
     best_model.fit(features, target)
 
     print("--- Model training complete. Server is now ready for predictions. ---")
 
-# This is the API endpoint that my HTML page will call.
+@app.route('/teams', methods=['GET'])
+def get_teams():
+    return jsonify({'teams': sorted(list(teams))})
+
+@app.route('/status', methods=['GET'])
+def status():
+    return jsonify({'model_accuracy': model_accuracy})
+
 @app.route('/predict', methods=['POST'])
 def predict():
-    # Get the data the user sent from the UI.
     json_data = request.get_json()
     home_team_input = json_data['home_team']
     away_team_input = json_data['away_team']
-    home_odds = float(json_data['home_odds'])
-    draw_odds = float(json_data['draw_odds'])
-    away_odds = float(json_data['away_odds'])
-
-    # Find the correct team names.
+    
     home_team_name = find_best_match(home_team_input, teams)
     away_team_name = find_best_match(away_team_input, teams)
 
     if not home_team_name or not away_team_name:
         return jsonify({'error': 'Could not find one of the teams.'}), 400
 
-    # Build the input for the model, just like before.
+    # --- MODIFIED: Added a fallback for odds ---
+    odds_source = "Live API"
+    live_odds = get_live_odds(home_team_name, away_team_name)
+    
+    if not live_odds:
+        odds_source = "Historical Average"
+        print(f"Falling back to historical odds for {home_team_name} vs {away_team_name}")
+        # Find the last match between these two teams in our data to get typical odds.
+        last_fixture = data[
+            (data['HomeTeam'] == home_team_name) & 
+            (data['AwayTeam'] == away_team_name)
+        ].tail(1)
+        
+        if not last_fixture.empty:
+            home_odds = last_fixture['B365H'].values[0]
+            draw_odds = last_fixture['B365D'].values[0]
+            away_odds = last_fixture['B365A'].values[0]
+        else:
+            # If they've never played, we can't even use historical odds.
+            return jsonify({'error': 'No live or historical odds found for this fixture.'}), 404
+    else:
+        home_odds = live_odds['home']
+        draw_odds = live_odds['draw']
+        away_odds = live_odds['away']
+
     home_latest_form = team_stats[home_team_name].tail(1).drop(columns=['Date']).add_prefix('Home_')
     away_latest_form = team_stats[away_team_name].tail(1).drop(columns=['Date']).add_prefix('Away_')
     
@@ -132,12 +243,9 @@ def predict():
     prediction_input = pd.concat([odds_df, home_latest_form.reset_index(drop=True), away_latest_form.reset_index(drop=True), h2h_df], axis=1)
     prediction_input = prediction_input[features_columns]
 
-    # Get the probabilities and send them back to the UI.
     match_probabilities = best_model.predict_proba(prediction_input)[0]
     classes = list(label_encoder.classes_)
     
-    # --- FIXED THE ERROR HERE ---
-    # I'm converting the special numpy numbers to regular python numbers.
     result = {
         'home_team_corrected': home_team_name,
         'away_team_corrected': away_team_name,
@@ -145,14 +253,12 @@ def predict():
             'home_win': float(match_probabilities[classes.index('H')]),
             'draw': float(match_probabilities[classes.index('D')]),
             'away_win': float(match_probabilities[classes.index('A')])
-        }
+        },
+        'odds_source': odds_source # Let the front-end know where the odds came from.
     }
     return jsonify(result)
 
-# This is the final part that actually starts the server.
 if __name__ == '__main__':
-    # I'll prepare everything once, right at the start.
     load_and_prepare_data_and_model()
-    # Now, I'll start my web server.
     app.run(port=5000, debug=False)
 
