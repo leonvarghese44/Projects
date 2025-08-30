@@ -27,7 +27,7 @@ model_accuracy = 0.0 # Stores the calculated accuracy of the model.
 # --- Function to get live odds from The Odds API ---
 def get_live_odds(home_team, away_team):
     """Fetches live betting odds from The Odds API."""
-    # --- I have inserted your API key here ---
+    # --- inserted the API key here ---
     API_KEY = "29981667af634cde0f98c8f45ece5306" 
     # --------------------------------------------------------------------
 
